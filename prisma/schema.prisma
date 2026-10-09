@@ -1,0 +1,192 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ==========================================
+// USER & AUTHENTICATION
+// ==========================================
+model User {
+  id           String         @id @default(uuid())
+  name         String
+  email        String         @unique
+  passwordHash String
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  wallets         Wallet[]
+  refreshTokens   RefreshToken[]
+  
+  // Relations for Invoices
+  createdInvoices Invoice[] @relation("InvoiceCreator")
+  payerInvoices   Invoice[] @relation("InvoicePayer")
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+}
+
+// ==========================================
+// CORE LEDGER & WALLET
+// ==========================================
+model Wallet {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  currency  String   @default("USD")
+  balance   Decimal  @default(0.00)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  entries   Entry[]
+  cards     Card[]
+}
+
+model Transaction {
+  id             String   @id @default(uuid())
+  idempotencyKey String?  @unique
+  type           TxType
+  status         TxStatus @default(PENDING)
+  amount         Decimal
+  createdAt      DateTime @default(now())
+
+  entries        Entry[]
+  invoice        Invoice? // Transação pode estar vinculada ao pagamento de uma fatura
+}
+
+model Entry {
+  id            String      @id @default(uuid())
+  transactionId String
+  transaction   Transaction @relation(fields: [transactionId], references: [id])
+  walletId      String
+  wallet        Wallet      @relation(fields: [walletId], references: [id])
+  type          EntryType
+  amount        Decimal
+  createdAt     DateTime    @default(now())
+}
+
+// ==========================================
+// MODULE 1: VIRTUAL CARDS (NOVO)
+// ==========================================
+model Card {
+  id              String     @id @default(uuid())
+  walletId        String
+  wallet          Wallet     @relation(fields: [walletId], references: [id])
+  cardNumberLast4 String     // Apenas guardamos os últimos 4 dígitos por segurança (PCI DSS)
+  expiryMonth     Int
+  expiryYear      Int
+  status          CardStatus @default(ACTIVE)
+  type            CardType   @default(VIRTUAL)
+  dailyLimit      Decimal?
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+}
+
+// ==========================================
+// MODULE 2: INVOICES / PAYMENT REQUESTS (NOVO)
+// ==========================================
+model Invoice {
+  id            String         @id @default(uuid())
+  
+  creatorId     String
+  creator       User           @relation("InvoiceCreator", fields: [creatorId], references: [id])
+  
+  payerEmail    String?        // Útil caso a cobrança seja para alguém fora do sistema
+  payerId       String?
+  payer         User?          @relation("InvoicePayer", fields: [payerId], references: [id])
+  
+  amount        Decimal
+  description   String?
+  status        InvoiceStatus  @default(PENDING)
+  dueDate       DateTime?
+  
+  // Quando for paga, é gerada uma Transaction no Ledger e vinculada aqui
+  transactionId String?        @unique
+  transaction   Transaction?   @relation(fields: [transactionId], references: [id])
+  
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+}
+
+// ==========================================
+// SYSTEM (IDEMPOTENCY & WEBHOOKS)
+// ==========================================
+model IdempotencyRecord {
+  key          String   @id
+  path         String
+  method       String
+  responseCode Int
+  responseBody Json
+  createdAt    DateTime @default(now())
+}
+
+model WebhookEndpoint {
+  id        String   @id @default(uuid())
+  url       String
+  secret    String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  deliveries WebhookDelivery[]
+}
+
+model WebhookDelivery {
+  id                String          @id @default(uuid())
+  webhookEndpointId String
+  webhookEndpoint   WebhookEndpoint @relation(fields: [webhookEndpointId], references: [id], onDelete: Cascade)
+  payload           Json
+  responseCode      Int?
+  status            String          // SUCCESS / FAILED
+  createdAt         DateTime        @default(now())
+}
+
+// ==========================================
+// ENUMS
+// ==========================================
+enum TxType {
+  DEPOSIT
+  TRANSFER
+  WITHDRAWAL
+  INVOICE_PAYMENT // Novo tipo de transação
+  CARD_PURCHASE   // Novo tipo de transação
+}
+
+enum TxStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  REFUNDED // Adicionado para estornos de cartão
+}
+
+enum EntryType {
+  CREDIT
+  DEBIT
+}
+
+enum CardStatus {
+  ACTIVE
+  BLOCKED
+  CANCELLED
+}
+
+enum CardType {
+  VIRTUAL
+  PHYSICAL
+}
+
+enum InvoiceStatus {
+  PENDING
+  PAID
+  CANCELLED
+  OVERDUE
+}
